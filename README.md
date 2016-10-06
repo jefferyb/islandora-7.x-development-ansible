@@ -14,7 +14,7 @@ cd islandora-7.x-ansible-installer
 ansible-playbook install-islandora-7.x.yaml
 ```
 
-If you want to switch some settings, edit islandora-7.x-ansible-installer/roles/install-islandora-7.x/vars/main.yml
+If you want to switch some settings, edit `islandora-7.x-ansible-installer/roles/install-islandora-7.x/vars/main.yml`
 
 # Contributing
 
