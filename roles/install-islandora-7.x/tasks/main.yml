@@ -1,0 +1,1007 @@
+---
+# tasks file for Installing the Minimum Islandora Stack
+# Last updated: 6 October 2016
+#
+# Islandora vagrant base box
+# Commit version: 49bb2f9
+# https://github.com/Islandora-Labs/islandora_vagrant_base_box
+#
+# Islandora vagrant 
+# Commit version: 6ecfb75 
+# https://github.com/Islandora-Labs/islandora_vagrant
+#
+# --volume: /var/lib/mysql
+- name: Install Java Repo
+  apt_repository: repo='ppa:webupd8team/java'
+
+- name: Install necessary packages
+  apt:
+    pkg: "{{ item }}"
+    state: present
+    update_cache: true
+  with_items:
+    - tasksel
+    - mysql-client
+    - python-mysqldb
+    - curl
+    - wget
+    - openssh-server
+    - build-essential
+    - automake
+    - libtool
+    - git
+    - vim
+    - maven
+    - tomcat7
+    - tomcat7-admin
+    - htop
+    - tree
+    - sendmail
+
+- name: Install the "LAMP" stack
+  shell: "{{ item }}"
+  with_items:
+    - "debconf-set-selections <<< 'mysql-server mysql-server/root_password password {{ MYSQL_ROOT_PASSWORD }}'"
+    - "debconf-set-selections <<< 'mysql-server mysql-server/root_password_again password {{ MYSQL_ROOT_PASSWORD }}'"
+    - tasksel install lamp-server
+    - "debconf-set-selections <<< 'oracle-java8-installer shared/accepted-oracle-license-v1-1 select true'"
+    - apt-get install -y oracle-java8-set-default 
+  args:
+    executable: /bin/bash
+    creates: /usr/lib/jvm/java-8-oracle/jre/bin/java
+
+- name: Set Java environments
+  lineinfile: 
+    dest: "{{ item }}" 
+    state: present
+    regexp: '^JAVA_HOME'
+    line: "JAVA_HOME={{ JAVA_HOME }}"
+  with_items:
+    - /etc/environment
+    - /etc/default/tomcat7
+
+- name: Create the database 
+  mysql_db:
+    name: "{{ FEDORA_DATABASE_NAME }}" 
+    state: present
+    encoding: utf8
+    collation: utf8_bin
+    login_password: "{{ MYSQL_ROOT_PASSWORD }}"
+
+- name: Create Fedora database user
+  mysql_user: 
+    name: "{{ FEDORA_DATABASE_USER }}" 
+    password: "{{ FEDORA_DATABASE_PASSWORD }}"
+    priv: "{{ FEDORA_DATABASE_NAME }}.*:ALL,GRANT"
+    state: present
+    login_password: "{{ MYSQL_ROOT_PASSWORD }}"
+
+- name: Add the web group
+  group: 
+    name: web
+    state: present
+
+- name: Add users to the web group
+  user: 
+    name: "{{ item }}"
+    groups: web
+    append: yes
+  with_items:
+    - www-data
+    - tomcat7
+
+- name: "Create {{ CONFIG_FILES }} folder"
+  file: 
+    path: "{{ CONFIG_FILES }}" 
+    state: directory
+
+# Installing FITS
+- name: "Create {{ FITS_HOME }} folder"
+  file: 
+    path: "{{ FITS_HOME }}" 
+    state: directory
+
+- name: "Download FITS v{{ FITS_VERSION }}"
+  get_url:
+    url: "http://projects.iq.harvard.edu/files/fits/files/fits-{{ FITS_VERSION }}.zip"
+    dest: /tmp/fits-{{ FITS_VERSION }}.zip
+
+- name: "Deploy FITS v{{ FITS_VERSION }}"
+  # shell: "unzip -q /tmp/fits-{{ FITS_VERSION }}.zip -d {{ FITS_HOME }}"
+  # args:
+  #   executable: /bin/bash
+  #   creates: "{{ FITS_HOME }}/fits-{{ FITS_VERSION }}/fits.sh"
+  unarchive: 
+    src: "/tmp/fits-{{ FITS_VERSION }}.zip"
+    dest: "{{ FITS_HOME }}"
+    remote_src: yes
+
+- name: Set Permissions
+  file: 
+    path: "{{ item }}"
+    mode: "u+x,g+x,o+x"
+  with_items:
+    - "{{ FITS_HOME }}/fits-{{ FITS_VERSION }}/fits.sh"
+    - "{{ FITS_HOME }}/fits-{{ FITS_VERSION }}/fits-env.sh"
+
+# Installing Fedora
+# --volume: {{ FEDORA_HOME }}
+- name: "Create {{ FEDORA_HOME }} folder"
+  file: 
+    path: "{{ FEDORA_HOME }}" 
+    state: directory
+    owner: tomcat7 
+    group: tomcat7 
+    mode: "g-w"
+    
+- name: "Download Fedora v{{ FEDORA_VERSION }}"
+  get_url:
+    url: "https://github.com/fcrepo3/fcrepo/releases/download/v{{ FEDORA_VERSION }}/fcrepo-installer-{{ FEDORA_VERSION }}.jar"
+    dest: "/tmp/fcrepo-installer-{{ FEDORA_VERSION }}.jar"
+
+- name: Get the Fedora answers file
+  template: 
+    src: install.properties.j2
+    dest: "{{ CONFIG_FILES }}/install.properties"
+
+- name: "Install Fedora v{{ FEDORA_VERSION }}"
+  shell: "java -jar /tmp/fcrepo-installer-{{ FEDORA_VERSION }}.jar {{ CONFIG_FILES }}/install.properties"
+  args:
+    executable: /bin/bash
+    creates: "{{ TOMCAT_HOME }}/webapps/fedora.war"
+
+- name: Set Permissions
+  file: 
+    path: "{{ item }}"
+    owner: tomcat7 
+    group: tomcat7 
+    recurse: yes
+  with_items:
+    - "{{ TOMCAT_HOME }}/webapps"
+    - "{{ FEDORA_HOME }}"
+
+- name: Start tomcat
+  service:
+    name: tomcat7
+    state: restarted
+
+- name: Wait for fedora
+  wait_for:
+    path: "{{ FEDORA_HOME }}/data/fedora-xacml-policies/repository-policies/default"
+
+- name: Clone the islandora-xacml-policies repo
+  git:
+    repo: https://github.com/Islandora/islandora-xacml-policies.git
+    dest: "{{ FEDORA_HOME }}/data/fedora-xacml-policies/repository-policies/islandora"
+    update: no
+
+- name: Setup XACML Policies
+  file: 
+    path: "{{ item }}"
+    state: absent
+  with_items:
+    - "{{ FEDORA_HOME }}/data/fedora-xacml-policies/repository-policies/default/deny-inactive-or-deleted-objects-or-datastreams-if-not-administrator.xml"
+    - "{{ FEDORA_HOME }}/data/fedora-xacml-policies/repository-policies/default/deny-policy-management-if-not-administrator.xml"
+    - "{{ FEDORA_HOME }}/data/fedora-xacml-policies/repository-policies/default/deny-unallowed-file-resolution.xml"
+    - "{{ FEDORA_HOME }}/data/fedora-xacml-policies/repository-policies/default/deny-purge-datastream-if-active-or-inactive.xml"
+    - "{{ FEDORA_HOME }}/data/fedora-xacml-policies/repository-policies/default/deny-purge-object-if-active-or-inactive.xml"
+    - "{{ FEDORA_HOME }}/data/fedora-xacml-policies/repository-policies/default/deny-reloadPolicies-if-not-localhost.xml"
+    - "{{ FEDORA_HOME }}/data/fedora-xacml-policies/repository-policies/islandora/permit-apim-to-anonymous-user.xml"
+    - "{{ FEDORA_HOME }}/data/fedora-xacml-policies/repository-policies/islandora/permit-upload-to-anonymous-user.xml"
+
+- name: "Work around for issue #32 : Authentication error with Fedora API-M"
+  copy:
+    src: deny-apim-if-not-localhost.xml
+    dest: "{{ FEDORA_HOME }}/data/fedora-xacml-policies/repository-policies/default/deny-apim-if-not-localhost.xml"
+
+- name: "Setup Drupal filter"
+  get_url:
+    url: "{{ item.url }}"
+    dest: "{{ item.dest }}"
+  with_items:
+    - { url: 'https://github.com/Islandora/islandora_drupal_filter/releases/download/v7.1.3/fcrepo-drupalauthfilter-3.8.1.jar', dest: "{{ TOMCAT_HOME }}/webapps/fedora/WEB-INF/lib/fcrepo-drupalauthfilter-3.8.1.jar" }
+
+- name: "Setup Drupal filter - jaas.conf"
+  copy:
+    src: jaas.conf
+    dest: "{{ FEDORA_HOME }}/server/config/jaas.conf"
+
+- name: Get a drupal filter file
+  template: 
+    src: filter-drupal.xml.j2
+    dest: "{{ FEDORA_HOME }}/server/config/filter-drupal.xml"
+
+- name: Set Permissions
+  file: 
+    path: "{{ item }}"
+    owner: tomcat7 
+    group: tomcat7 
+    recurse: yes
+  with_items:
+    - "{{ TOMCAT_HOME }}/webapps"
+    - "{{ FEDORA_HOME }}"
+
+- name: Restart tomcat
+  service:
+    name: tomcat7
+    state: restarted
+
+# Installing Djatoka
+- name: "Create {{ DJATOKA_HOME }} folder"
+  file: 
+    path: "{{ DJATOKA_HOME }}" 
+    state: directory
+    
+- name: "Download Djatoka"
+  get_url:
+    url: "http://downloads.sourceforge.net/project/djatoka/djatoka/1.1/adore-djatoka-1.1.tar.gz"
+    dest: /tmp/adore-djatoka-1.1.tar.gz
+
+- name: Deploy Djatoka
+  shell: "tar -xzf /tmp/adore-djatoka-1.1.tar.gz -C {{ DJATOKA_HOME }} --strip-components=1"
+  args:
+    executable: /bin/bash
+    creates: "{{ DJATOKA_HOME }}/bin/Linux-x86-64/kdu_compress"
+
+- name: Symlink kdu_compress for Large Image Solution Pack
+  file:
+    src: "{{ DJATOKA_HOME }}/bin/Linux-x86-64/kdu_compress"
+    dest: /usr/bin/kdu_compress
+    state: link
+
+- name: Deploy Djatoka
+  copy:
+    src: "{{ DJATOKA_HOME }}/dist/adore-djatoka.war"
+    dest: "{{ TOMCAT_HOME }}/webapps/adore-djatoka.war"
+    remote_src: yes
+
+- name: "Copy kdu_libs.conf"
+  copy:
+    src: kdu_libs.conf
+    dest: /etc/ld.so.conf.d/kdu_libs.conf
+
+- name: Restart tomcat
+  service:
+    name: tomcat7
+    state: restarted
+
+- name: Wait for adore-djatoka
+  wait_for: 
+    path: "{{ TOMCAT_HOME }}/webapps/adore-djatoka/WEB-INF/classes"
+
+- name: "Setup Djatoka Logging"
+  copy:
+    src: log4j.properties
+    dest: "{{ TOMCAT_HOME }}/webapps/adore-djatoka/WEB-INF/classes/log4j.properties"
+
+# Installing Solr
+- name: "Create {{ SOLR_HOME }} folder"
+  file: 
+    path: "{{ SOLR_HOME }}" 
+    state: directory
+    
+- name: "Download Solr"
+  get_url:
+    url: "http://archive.apache.org/dist/lucene/solr/{{ SOLR_VERSION }}/solr-{{ SOLR_VERSION }}.tgz"
+    dest: "/tmp/solr-{{ SOLR_VERSION }}.tgz"
+
+- name: Deploy Solr
+  shell: "{{ item }}"
+  with_items:
+    - "tar -xzf /tmp/solr-{{ SOLR_VERSION }}.tgz -C {{ SOLR_HOME }} --strip-components=3 solr-{{ SOLR_VERSION }}/example/solr"
+    - "tar -xzf /tmp/solr-{{ SOLR_VERSION }}.tgz -C {{ TOMCAT_HOME }}/webapps --strip-components=2 solr-{{ SOLR_VERSION }}/dist/solr-{{ SOLR_VERSION }}.war"
+    - "mv {{ TOMCAT_HOME }}/webapps/solr-{{ SOLR_VERSION }}.war {{ TOMCAT_HOME }}/webapps/solr.war"
+  args:
+    executable: /bin/bash
+    creates: "{{ TOMCAT_HOME }}/webapps/solr.war"
+
+- name: "Symlink {{ SOLR_HOME }} to {{ TOMCAT_HOME }}/solr"
+  file:
+    src: "{{ SOLR_HOME }}"
+    dest: "{{ TOMCAT_HOME }}/solr"
+    state: link
+
+- name: Set Permissions
+  file: 
+    path: "{{ item }}"
+    owner: tomcat7 
+    group: tomcat7 
+    recurse: yes
+  with_items:
+    - "{{ TOMCAT_HOME }}/webapps"
+    - "{{ FEDORA_HOME }}"
+    - "{{ SOLR_HOME }}"
+
+- name: Restart tomcat
+  service:
+    name: tomcat7
+    state: restarted
+
+# Installing GSearch
+- name: GSearch Dependencies
+  shell: "{{ item }}"
+  with_items:
+    - git clone -b 4.x --recursive https://github.com/discoverygarden/basic-solr-config.git /tmp/basic-solr-config
+    - sed -i "s#/usr/local/fedora/tomcat#{{ TOMCAT_HOME }}#g" /tmp/basic-solr-config/islandora_transforms/*xslt
+    - git clone https://github.com/discoverygarden/dgi_gsearch_extensions.git /tmp/dgi_gsearch_extensions
+    - cd /tmp/dgi_gsearch_extensions && mvn -q package
+    - git clone https://github.com/fcrepo3/gsearch.git /tmp/gsearch
+    - cd /tmp/gsearch/FedoraGenericSearch && ant buildfromsource
+  args:
+    executable: /bin/bash
+    chdir: /tmp/
+    creates: /tmp/gsearch/FgsBuild/fromsource/fedoragsearch.war
+
+- name: Update JAVA_OPTS
+  lineinfile:
+    dest: /etc/default/tomcat7
+    regexp: ^JAVA_OPTS=
+    line: JAVA_OPTS="-Djava.awt.headless=true -Xmx1024m -XX:MaxPermSize=256m -XX:+UseConcMarkSweepGC -Dkakadu.home={{ DJATOKA_HOME }}/bin/Linux-x86-64 -Djava.library.path={{ DJATOKA_HOME }}/lib/Linux-x86-64 -DLD_LIBRARY_PATH={{ DJATOKA_HOME }}/lib/Linux-x86-64"
+
+- name: Deploy GSearch
+  copy:
+    src: "/tmp/gsearch/FgsBuild/fromsource/fedoragsearch.war"
+    dest: "{{ TOMCAT_HOME }}/webapps/fedoragsearch.war"
+    remote_src: yes
+
+- name: Set Permissions
+  file: 
+    path: "{{ item }}"
+    owner: tomcat7 
+    group: tomcat7 
+    recurse: yes
+  with_items:
+    - "{{ TOMCAT_HOME }}/webapps"
+    - "{{ FEDORA_HOME }}"
+    - "{{ SOLR_HOME }}"
+
+- name: Restart tomcat
+  service:
+    name: tomcat7
+    state: restarted
+
+- name: Wait for GSearch
+  wait_for:
+    path: "{{ TOMCAT_HOME }}/webapps/fedoragsearch/WEB-INF/classes"
+
+- name: GSearch Dependencies
+  shell: "{{ item }}"
+  with_items:
+    - wget http://alpha.library.yorku.ca/fgsconfigFinal.zip
+    - unzip fgsconfigFinal.zip
+  args:
+    executable: /bin/bash
+    chdir: "{{ TOMCAT_HOME }}/webapps/fedoragsearch/WEB-INF/classes/"
+    creates: "{{ TOMCAT_HOME }}/webapps/fedoragsearch/WEB-INF/classes/fgsconfigFinal/fedoragsearch.properties"
+
+- name: Configure fgsconfigFinal index.properties
+  replace:
+    regexp: "/usr/local/solr"
+    replace: "{{ SOLR_HOME }}"
+    dest: "{{ TOMCAT_HOME }}/webapps/fedoragsearch/WEB-INF/classes/fgsconfigFinal/index/FgsIndex/index.properties"
+
+- name: Deploy dgi_gsearch_extensions
+  copy:
+    src: "/tmp/dgi_gsearch_extensions/target/gsearch_extensions-0.1.1-jar-with-dependencies.jar"
+    dest: "{{ TOMCAT_HOME }}/webapps/fedoragsearch/WEB-INF/lib/gsearch_extensions-0.1.1-jar-with-dependencies.jar"
+    remote_src: yes
+
+- name: "Solr & GSearch configurations"
+  shell: "{{ item }}"
+  with_items:
+    - "cp -fr /tmp/basic-solr-config/conf/* {{ SOLR_HOME }}/collection1/conf/"
+  args:
+    executable: /bin/bash
+    creates: "{{ SOLR_HOME }}/collection1/conf/data-config.xml"
+
+- name: "Solr & GSearch configurations"
+  shell: "{{ item }}"
+  with_items:
+    - "cp -fr /tmp/basic-solr-config/islandora_transforms/* {{ TOMCAT_HOME }}/webapps/fedoragsearch/WEB-INF/classes/fgsconfigFinal/index/FgsIndex/islandora_transforms/"
+  args:
+    executable: /bin/bash
+    creates: "{{ TOMCAT_HOME }}/webapps/fedoragsearch/WEB-INF/classes/fgsconfigFinal/index/FgsIndex/islandora_transforms/README.md"
+
+- name: Set Permissions
+  file: 
+    path: "{{ item }}"
+    owner: tomcat7 
+    group: tomcat7 
+    recurse: yes
+  with_items:
+    - "{{ TOMCAT_HOME }}/webapps"
+    - "{{ FEDORA_HOME }}"
+    - "{{ SOLR_HOME }}"
+
+- name: Restart tomcat
+  service:
+    name: tomcat7
+    state: restarted
+
+# Installing Drupal
+- name: Drush and drupal deps
+  apt:
+    pkg: "{{ item }}"
+    state: present
+  with_items:
+    - php5-gd
+    - php5-dev
+    - php5-xsl
+    - php-soap
+    - php5-curl
+    - php5-imagick
+    - imagemagick
+    - lame
+    - libimage-exiftool-perl
+    - bibutils
+    - poppler-utils
+
+- name: "Create {{ DRUSH_HOME }} folder"
+  file: 
+    path: "{{ DRUSH_HOME }}" 
+    state: directory
+    
+- name: "Download Drush"
+  get_url:
+    url: "http://alpha.library.yorku.ca/drush-{{ DRUSH_VERSION }}.tar.gz"
+    dest: "/tmp/drush-{{ DRUSH_VERSION }}.tar.gz"
+
+- name: Install uploadprogress
+  shell: "{{ item }}"
+  with_items:
+    - pecl install uploadprogress
+    - sed -i '/; extension_dir = "ext"/ a\ extension=uploadprogress.so' /etc/php5/apache2/php.ini
+    - "tar -xzf /tmp/drush-{{ DRUSH_VERSION }}.tar.gz -C {{ DRUSH_HOME }} --strip-components=1"
+  args:
+    executable: /bin/bash
+    creates: "{{ DRUSH_HOME }}/drush"
+
+- name: "Symlink {{ DRUSH_HOME }}/drush to /usr/bin/drush"
+  file:
+    src: "{{ DRUSH_HOME }}/drush"
+    dest: "/usr/bin/drush"
+    state: link
+
+- name: Enable rewrite module
+  apache2_module:
+    state: present
+    name: rewrite
+
+- name: Reload apache
+  service:
+    name: apache2
+    state: reloaded
+
+- name: Download Drupal
+  shell: "{{ item }}"
+  with_items:
+    - drush dl drupal --drupal-project-rename=drupal
+  args:
+    executable: /bin/bash
+    chdir: /var/www/
+    creates: "{{ DRUPAL_HOME }}/index.php"
+
+- name: Set Permissions
+  file: 
+    path: "{{ item }}"
+    owner: www-data 
+    group: www-data 
+    mode: "g+w"
+    recurse: yes
+  with_items:
+    - "{{ DRUPAL_HOME }}"
+
+- name: Install Drupal
+  shell: "{{ item }}"
+  with_items:
+    - "drush si -y --db-url=mysql://root:{{ MYSQL_ROOT_PASSWORD }}@{{ MYSQL_HOSTNAME }}/{{ DRUPAL_DATABASE_NAME }} --site-name={{ DRUPAL_SITE_NAME }}"
+  args:
+    executable: /bin/bash
+    chdir: "{{ DRUPAL_HOME }}/"
+    creates: "{{ DRUPAL_HOME }}/sites/default/settings.php"
+
+- name: Add admin user to drupal
+  shell: "{{ item }}"
+  with_items:
+    - "drush user-password {{ DRUPAL_SITE_ADMIN }} --password={{ DRUPAL_SITE_ADMIN_PASSWORD }}"
+  args:
+    executable: /bin/bash
+    chdir: "{{ DRUPAL_HOME }}/"
+
+- name: "Enable proxy module"
+  file:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    state: link
+  with_items:
+    - { src: "/etc/apache2/mods-available/proxy.load", dest: "/etc/apache2/mods-enabled/proxy.load" }
+    - { src: "/etc/apache2/mods-available/proxy_http.load", dest: "/etc/apache2/mods-enabled/proxy_http.load" }
+    - { src: "/etc/apache2/mods-available/proxy_html.load", dest: "/etc/apache2/mods-enabled/proxy_html.load" }
+    - { src: "/etc/apache2/mods-available/headers.load", dest: "/etc/apache2/mods-enabled/headers.load" }
+
+- name: Set document root
+  replace:
+    dest: "{{ item.dest }}"
+    regexp: "{{ item.regexp }}" 
+    replace: "{{ item.line }}"
+  with_items:
+    - { dest: "{{ APACHE_CONFIG_FILE }}", regexp: '^\<VirtualHost \*\:80>', line: "<VirtualHost *:{{ APACHE_PORT }}>" }
+    - { dest: "{{ APACHE_CONFIG_FILE }}", regexp: 'DocumentRoot /var/www/html', line: "DocumentRoot {{ DRUPAL_HOME }}" }
+
+- lineinfile:
+    regexp: "{{ item.regexp }}" 
+    line: "{{ item.line }}"
+    dest: "{{ item.dest }}"
+  with_items:
+    - { dest: "/etc/apache2/ports.conf", regexp: "Listen 80", line: "Listen {{ APACHE_PORT }}" }
+
+- lineinfile:
+    regexp: "^NameVirtualHost"
+    insertafter: "^Listen {{ APACHE_PORT }}"
+    line: "NameVirtualHost *:{{ APACHE_PORT }}"
+    dest: "/etc/apache2/ports.conf"
+
+- name: shellcheck disable=SC2162
+  blockinfile:
+    dest: "{{ APACHE_CONFIG_FILE }}"
+    insertbefore: "^</VirtualHost>"
+    block: |
+        ServerAlias {{ APACHE_SERVER_ALIAS }}
+
+        <Directory {{ DRUPAL_HOME }}>
+          Options Indexes FollowSymLinks
+          AllowOverride All
+          Require all granted
+        </Directory>
+
+        ProxyRequests Off
+        ProxyPreserveHost On
+
+        <Proxy *>
+          Order deny,allow
+          Allow from all
+        </Proxy>
+
+        ProxyPass /fedora/get http://{{ FEDORA_HOSTNAME }}:8080/fedora/get
+        ProxyPassReverse /fedora/get http://{{ FEDORA_HOSTNAME }}:8080/fedora/get
+        ProxyPass /fedora/services http://{{ FEDORA_HOSTNAME }}:8080/fedora/services
+        ProxyPassReverse /fedora/services http://{{ FEDORA_HOSTNAME }}:8080/fedora/services
+        ProxyPass /fedora/describe http://{{ FEDORA_HOSTNAME }}:8080/fedora/describe
+        ProxyPassReverse /fedora/describe http://{{ FEDORA_HOSTNAME }}:8080/fedora/describe
+        ProxyPass /fedora/risearch http://{{ FEDORA_HOSTNAME }}:8080/fedora/risearch
+        ProxyPassReverse /fedora/risearch http://{{ FEDORA_HOSTNAME }}:8080/fedora/risearch
+        ProxyPass /adore-djatoka http://{{ DJATOKA_HOSTNAME }}:8080/adore-djatoka
+        ProxyPassReverse /adore-djatoka http://{{ DJATOKA_HOSTNAME }}:8080/adore-djatoka
+        
+- name: Torch the default index.html
+  file: 
+    path: /var/www/html/index.html
+    state: absent
+
+- name: Restart apache
+  service:
+    name: apache2
+    state: restarted
+
+- name: "Make the modules directory"
+  file: 
+    path: "{{ DRUPAL_HOME }}/sites/all/modules "
+    state: directory
+    
+- name: Install Modules
+  shell: "{{ item }}"
+  with_items:
+    - drush dl devel imagemagick ctools jquery_update pathauto xmlsitemap views variable token libraries datepicker date
+    - drush -y en devel imagemagick ctools jquery_update pathauto xmlsitemap views variable token libraries datepicker_views
+    - drush dl coder-7.x-2.5 && drush -y en coder
+  args:
+    executable: /bin/bash
+    chdir: "{{ DRUPAL_HOME }}/sites/all/modules"
+    creates: "{{ DRUPAL_HOME }}/sites/all/modules/coder/coder.info"
+
+- name: "php.ini templating"
+  copy:
+    src: php.ini
+    dest: /etc/php5/apache2/php.ini
+
+- name: Restart apache
+  service:
+    name: apache2
+    state: restarted
+
+- name: Set Permissions
+  file: 
+    path: "{{ item }}"
+    owner: www-data 
+    group: www-data 
+    recurse: yes
+  with_items:
+    - "{{ DRUPAL_HOME }}"
+
+- name: Run cron
+  shell: "{{ item }}"
+  with_items:
+    - drush cron
+  args:
+    executable: /bin/bash
+    chdir: "{{ DRUPAL_HOME }}/sites/all/modules"
+
+# Installing Tesseract
+- name: Install Tesseract
+  apt:
+    pkg: "{{ item }}"
+    state: present
+  with_items:
+    - tesseract-ocr
+    - tesseract-ocr-eng
+    - tesseract-ocr-fra
+
+# Installing FFmpeg
+- name: Install dependencies
+  apt:
+    pkg: "{{ item }}"
+    state: present
+  with_items:
+    - libfaac-dev
+    - autoconf
+    - automake
+    - build-essential
+    - libass-dev
+    - libfreetype6-dev
+    - libgpac-dev
+    - libsdl1.2-dev
+    - libtheora-dev
+    - libtool
+    - libva-dev
+    - libvdpau-dev
+    - libvorbis-dev
+    - libx11-dev
+    - libxext-dev
+    - libxfixes-dev
+    - pkg-config
+    - texi2html
+    - zlib1g-dev
+    - yasm
+    - libx264-dev
+    - libmp3lame-dev
+    - unzip
+    - x264
+    - libgsm1-dev
+    - libopencore-amrnb-dev
+    - libopencore-amrwb-dev
+    - libopenjpeg-dev
+    - libschroedinger-dev
+    - libspeex-dev
+    - libvpx-dev
+    - libxvidcore-dev
+    - libdc1394-22-dev
+
+- name: "Download FFMpeg"
+  get_url:
+    url: "http://www.ffmpeg.org/releases/ffmpeg-{{ FFMPEG_VERSION }}.tar.gz"
+    dest: "/tmp/ffmpeg-{{ FFMPEG_VERSION }}.tar.gz"
+
+- name: Extract FFMpeg
+  shell: "tar -xzvf ffmpeg-{{ FFMPEG_VERSION }}.tar.gz"
+  args:
+    executable: /bin/bash
+    chdir: "/tmp"
+    creates: "/tmp/ffmpeg-{{ FFMPEG_VERSION }}/configure"
+
+- name: Configure FFMpeg
+  shell: "{{ item }}"
+  with_items:
+    - ./configure --enable-gpl --enable-version3 --enable-nonfree --enable-postproc --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libdc1394 --enable-libfaac --enable-libgsm --enable-libmp3lame --enable-libopenjpeg --enable-libschroedinger --enable-libspeex --enable-libtheora --enable-libvorbis --enable-libvpx --enable-libx264 --enable-libxvid
+    - make 
+    - make install && ldconfig
+  args:
+    executable: /bin/bash
+    chdir: "/tmp/ffmpeg-{{ FFMPEG_VERSION }}"
+    creates: "/usr/local/bin/ffmpeg"
+
+# Installing warctools
+- name: Install dependencies
+  apt:
+    pkg: "{{ item }}"
+    state: present
+  with_items:
+    - python-setuptools
+    - python-unittest2
+
+- name: Clone warctools
+  git:
+    repo: https://github.com/internetarchive/warctools.git
+    dest: /tmp/warctools
+    update: no
+
+- name: Build warctools
+  shell: "{{ item }}"
+  with_items:
+    - ./setup.py build
+    - ./setup.py install
+  args:
+    executable: /bin/bash
+    chdir: "/tmp/warctools"
+    creates: "/usr/local/bin/warcfilter"
+
+# Installing Sleuthkit
+- name: Install dependencies
+  apt:
+    pkg: "{{ item }}"
+    state: present
+  with_items:
+    - libafflib-dev
+    - afflib-tools
+    - libewf-dev
+    - ewf-tools
+
+- name: Clone Sleuthkit
+  git:
+    repo: https://github.com/sleuthkit/sleuthkit.git
+    version: 5f8a005475c3ea3e6547c3276aea381e9804c005
+    dest: /tmp/sleuthkit
+    update: no
+
+- name: Build Sleuthkit
+  shell: "{{ item }}"
+  with_items:
+    - ./bootstrap
+    - ./configure
+    - make
+    - make install && ldconfig
+  args:
+    executable: /bin/bash
+    chdir: "/tmp/sleuthkit"
+    creates: "/usr/local/bin/jpeg_extract"
+
+# Installing all Islandora Foundation modules
+- name: Set Permissions
+  file: 
+    path: "{{ item }}"
+    owner: www-data 
+    group: www-data 
+    mode: "775"
+    recurse: yes
+  with_items:
+    - "{{ DRUPAL_HOME }}/sites/all/modules"
+    - "{{ DRUPAL_HOME }}/sites/all/libraries"
+    - "{{ DRUPAL_HOME }}/sites/default/files"
+
+- name: Clone all Islandora Foundation modules
+  git:
+    repo: "https://github.com/Islandora/{{ item }}"
+    dest: "{{ DRUPAL_HOME }}/sites/all/modules/{{ item }}"
+    update: no
+  with_items:
+    - islandora
+    - islandora_altmetrics
+    - islandora_bagit
+    - islandora_batch
+    - islandora_book_batch
+    - islandora_bookmark
+    - islandora_checksum
+    - islandora_checksum_checker
+    - islandora_fits
+    - islandora_importer
+    - islandora_internet_archive_bookreader
+    - islandora_jwplayer
+    - islandora_marcxml
+    - islandora_newspaper_batch
+    - islandora_oai
+    - islandora_ocr
+    - islandora_openseadragon
+    - islandora_paged_content
+    - islandora_pathauto
+    - islandora_pdfjs
+    - islandora_premis
+    - islandora_populator
+    - islandora_scholar
+    - islandora_simple_workflow
+    - islandora_solr_facet_pages
+    - islandora_solr_metadata
+    - islandora_solr_search
+    - islandora_solr_views
+    - islandora_solution_pack_audio
+    - islandora_solution_pack_book
+    - islandora_solution_pack_collection
+    - islandora_solution_pack_compound
+    - islandora_solution_pack_disk_image
+    - islandora_solution_pack_entities
+    - islandora_solution_pack_image
+    - islandora_solution_pack_large_image
+    - islandora_solution_pack_newspaper
+    - islandora_solution_pack_pdf
+    - islandora_solution_pack_video
+    - islandora_solution_pack_web_archive
+    - islandora_usage_stats
+    - islandora_videojs
+    - islandora_xacml_editor
+    - islandora_xml_forms
+    - islandora_form_fieldpanel
+    - islandora_xmlsitemap
+    - objective_forms
+    - php_lib
+
+- name: Set git filemode false for git
+  replace:
+    regexp: "filemode = true"
+    replace: "filemode = false"
+    dest: "{{ DRUPAL_HOME }}/sites/all/modules/{{ item }}/.git/config"
+  with_items:
+    - islandora
+    - islandora_altmetrics
+    - islandora_bagit
+    - islandora_batch
+    - islandora_book_batch
+    - islandora_bookmark
+    - islandora_checksum
+    - islandora_checksum_checker
+    - islandora_fits
+    - islandora_importer
+    - islandora_internet_archive_bookreader
+    - islandora_jwplayer
+    - islandora_marcxml
+    - islandora_newspaper_batch
+    - islandora_oai
+    - islandora_ocr
+    - islandora_openseadragon
+    - islandora_paged_content
+    - islandora_pathauto
+    - islandora_pdfjs
+    - islandora_premis
+    - islandora_populator
+    - islandora_scholar
+    - islandora_simple_workflow
+    - islandora_solr_facet_pages
+    - islandora_solr_metadata
+    - islandora_solr_search
+    - islandora_solr_views
+    - islandora_solution_pack_audio
+    - islandora_solution_pack_book
+    - islandora_solution_pack_collection
+    - islandora_solution_pack_compound
+    - islandora_solution_pack_disk_image
+    - islandora_solution_pack_entities
+    - islandora_solution_pack_image
+    - islandora_solution_pack_large_image
+    - islandora_solution_pack_newspaper
+    - islandora_solution_pack_pdf
+    - islandora_solution_pack_video
+    - islandora_solution_pack_web_archive
+    - islandora_usage_stats
+    - islandora_videojs
+    - islandora_xacml_editor
+    - islandora_xml_forms
+    - islandora_form_fieldpanel
+    - islandora_xmlsitemap
+    - objective_forms
+    - php_lib
+
+- name: Clone Tuque and Cite-Proc
+  git:
+    repo: "https://github.com/Islandora/{{ item }}"
+    dest: "{{ DRUPAL_HOME }}/sites/all/libraries/{{ item }}"
+    update: no
+  with_items:
+    - tuque
+    - citeproc-php
+- name: Clone BagItPHP
+  git:
+    repo: "git://github.com/scholarslab/BagItPHP.git"
+    dest: "{{ DRUPAL_HOME }}/sites/all/libraries/BagItPHP"
+    update: no
+
+- name: Set git filemode false for git
+  replace:
+    regexp: "filemode = true"
+    replace: "filemode = false"
+    dest: "{{ DRUPAL_HOME }}/sites/all/libraries/{{ item }}/.git/config"
+  with_items:
+    - tuque
+    - BagItPHP
+
+- name: "Move some drush file to {{ UID }}'s .drush folder"
+  command: "mv {{ DRUPAL_HOME }}/sites/all/modules/{{ item.location }}/{{ item.drush }} {{ HOME_DIR }}/.drush"
+  with_items:
+    - location: islandora_openseadragon
+      drush: islandora_openseadragon.drush.inc
+    - location: islandora_videojs
+      drush: islandora_videojs.drush.inc
+    - location: islandora_pdfjs
+      drush: islandora_pdfjs.drush.inc
+    - location: islandora_internet_archive_bookreader
+      drush: islandora_internet_archive_bookreader.drush.inc
+  args:
+    creates: "{{ HOME_DIR }}/.drush/islandora_internet_archive_bookreader.drush.inc"
+      
+- name: "Run enable some modules"
+  shell: "{{ item }}"
+  with_items:
+    - drush -y -u 1 en php_lib islandora objective_forms
+    - drush -y -u 1 en islandora_solr islandora_solr_metadata islandora_solr_facet_pages islandora_solr_views
+    - drush -y -u 1 en islandora_basic_collection islandora_pdf islandora_audio islandora_book islandora_compound_object islandora_disk_image islandora_entities islandora_entities_csv_import islandora_basic_image islandora_large_image islandora_newspaper islandora_video islandora_web_archive
+    - drush -y -u 1 en islandora_premis islandora_checksum islandora_checksum_checker
+    - drush -y -u 1 en islandora_book_batch islandora_pathauto islandora_pdfjs islandora_videojs islandora_jwplayer
+    - drush -y -u 1 en xml_forms xml_form_builder xml_schema_api xml_form_elements xml_form_api jquery_update zip_importer islandora_basic_image islandora_bibliography islandora_compound_object islandora_google_scholar islandora_scholar_embargo islandora_solr_config citation_exporter doi_importer endnotexml_importer pmid_importer ris_importer
+    - drush -y -u 1 en islandora_fits islandora_ocr islandora_oai islandora_marcxml islandora_simple_workflow islandora_xacml_api islandora_xacml_editor islandora_xmlsitemap colorbox islandora_internet_archive_bookreader islandora_bagit islandora_batch_report islandora_usage_stats islandora_form_fieldpanel islandora_altmetrics islandora_populator islandora_newspaper_batch 
+  args:
+    executable: /bin/bash
+    chdir: "{{ DRUPAL_HOME }}/sites/all/modules"
+
+- name: "Set variables for Islandora modules"
+  shell: "{{ item }}"
+  with_items:
+    - drush eval "variable_set('islandora_audio_viewers', array('name' => array('none' => 'none', 'islandora_videojs' => 'islandora_videojs'), 'default' => 'islandora_videojs'))"
+    - drush eval "variable_set('islandora_fits_executable_path', '{{ FITS_HOME }}/fits-{{ FITS_VERSION }}/fits.sh')"
+    - drush eval "variable_set('islandora_lame_url', '/usr/bin/lame')"
+    - drush eval "variable_set('islandora_video_viewers', array('name' => array('none' => 'none', 'islandora_videojs' => 'islandora_videojs'), 'default' => 'islandora_videojs'))"
+    - drush eval "variable_set('islandora_video_ffmpeg_path', '/usr/local/bin/ffmpeg')"
+    - drush eval "variable_set('islandora_book_viewers', array('name' => array('none' => 'none', 'islandora_internet_archive_bookreader' => 'islandora_internet_archive_bookreader'), 'default' => 'islandora_internet_archive_bookreader'))"
+    - drush eval "variable_set('islandora_book_page_viewers', array('name' => array('none' => 'none', 'islandora_openseadragon' => 'islandora_openseadragon'), 'default' => 'islandora_openseadragon'))"
+    - drush eval "variable_set('islandora_large_image_viewers', array('name' => array('none' => 'none', 'islandora_openseadragon' => 'islandora_openseadragon'), 'default' => 'islandora_openseadragon'))"
+    - drush eval "variable_set('islandora_use_kakadu', TRUE)"
+    - drush eval "variable_set('islandora_newspaper_issue_viewers', array('name' => array('none' => 'none', 'islandora_internet_archive_bookreader' => 'islandora_internet_archive_bookreader'), 'default' => 'islandora_internet_archive_bookreader'))"
+    - drush eval "variable_set('islandora_newspaper_page_viewers', array('name' => array('none' => 'none', 'islandora_openseadragon' => 'islandora_openseadragon'), 'default' => 'islandora_openseadragon'))"
+    - drush eval "variable_set('islandora_pdf_create_fulltext', 1)"
+    - drush eval "variable_set('islandora_checksum_enable_checksum', TRUE)"
+    - drush eval "variable_set('islandora_checksum_checksum_type', 'SHA-1')"
+    - drush eval "variable_set('islandora_ocr_tesseract', '/usr/bin/tesseract')"
+    - drush eval "variable_set('islandora_batch_java', '/usr/bin/java')"
+    - drush eval "variable_set('image_toolkit', 'imagemagick')"
+    - drush eval "variable_set('imagemagick_convert', '/usr/bin/convert')"
+  args:
+    executable: /bin/bash
+    chdir: "{{ DRUPAL_HOME }}/sites/all/modules"
+  
+# Installing all Islandora Foundation module's required libraries
+- name: Installing all Islandora Foundation module's required libraries
+  shell: "{{ item }}"
+  with_items:
+    - drush cache-clear drush
+    - drush -v videojs-plugin
+    - drush -v pdfjs-plugin
+    - drush -v iabookreader-plugin
+    - drush -v colorbox-plugin
+    - drush -v openseadragon-plugin
+    - drush -v -y en islandora_openseadragon
+  args:
+    executable: /bin/bash
+    chdir: "{{ DRUPAL_HOME }}/sites/all/modules"
+
+- name: Set Permissions
+  file: 
+    path: "{{ HOME_DIR }}/.drush"
+    owner: "{{ UID }}"
+    group: "{{ GUID }}"
+    recurse: yes
+
+# post install
+- name: Setup admin-gui rolename
+  lineinfile:
+    regexp: '^<role rolename="admin-gui"/>'
+    insertbefore: "^</tomcat-users>"
+    line: '<role rolename="admin-gui"/>'
+    dest: "/etc/tomcat7/tomcat-users.xml"
+
+- name: Setup a user for Tomcat Manager
+  lineinfile:
+    regexp: "^<user username="
+    insertbefore: "^</tomcat-users>"
+    line: '<user username="{{ TOMCAT_USERNAME }}" password="{{ TOMCAT_PASSWORD }}" roles="manager-gui,admin-gui"/>'
+    dest: "/etc/tomcat7/tomcat-users.xml"
+
+- name: Set Permissions
+  file: 
+    path: "{{ item }}"
+    owner: www-data 
+    group: www-data 
+    mode: "775"
+    recurse: yes
+  with_items:
+    - "{{ DRUPAL_HOME }}/sites/default/files"
+
+- name: Restart tomcat
+  service:
+    name: tomcat7
+    state: restarted
+

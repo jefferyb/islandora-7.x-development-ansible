@@ -1,0 +1,58 @@
+---
+# vars file for install-islandora-7.x
+    CONFIG_FILES: "/opt/config_files"
+    UID: "root"
+    GUID: "root"
+    HOME_DIR: "/root"
+
+# MySQL Settings:
+    MYSQL_HOSTNAME: "localhost"
+    MYSQL_ROOT_PASSWORD: "islandora"
+
+    DRUPAL_DATABASE_NAME: "drupal7"
+    FEDORA_DATABASE_NAME: "fedora3"
+
+    FEDORA_DATABASE_USER: "fedoraAdmin"
+    FEDORA_DATABASE_PASSWORD: "password"
+
+# Java's setting:
+    JAVA_HOME: "/usr/lib/jvm/java-8-oracle/jre"
+
+# FITS Settings:
+    FITS_HOME: "/usr/local/fits"
+    FITS_VERSION: 0.10.1
+
+# Fedora Settings:
+    FEDORA_HOME: "/usr/local/fedora"
+    FEDORA_VERSION: 3.8.1
+    FEDORA_HOSTNAME: "localhost"
+
+# Tomcat Settings:
+    TOMCAT_HOME: "/var/lib/tomcat7"
+    TOMCAT_USERNAME: "islandora"
+    TOMCAT_PASSWORD: "islandora"
+
+# Djatoka Settings:
+    DJATOKA_HOME: "/usr/local/djatoka"
+    DJATOKA_HOSTNAME: "localhost"
+
+# Solr Settings:
+    SOLR_HOME: "/usr/local/solr"
+    SOLR_VERSION: 4.2.0
+
+# Drush Settings:
+    DRUSH_HOME: "/opt/drush"
+    DRUSH_VERSION: 6.3
+
+# Drupal Settings:
+    DRUPAL_HOME: "/var/www/drupal"
+    DRUPAL_SITE_NAME: "islandora-development.org"
+    DRUPAL_SITE_ADMIN: "admin"
+    DRUPAL_SITE_ADMIN_PASSWORD: "islandora"
+    APACHE_CONFIG_FILE: "/etc/apache2/sites-enabled/000-default.conf"
+    APACHE_SERVER_ALIAS: "{{ ansible_hostname }}"
+    APACHE_PORT: 8000
+
+# FFMPEG Settings:
+    FFMPEG_VERSION: 1.1.4
+
