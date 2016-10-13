@@ -1,6 +1,6 @@
 # Islandora 7.x.: Ansible
 
-This ansible playbook installs [vagrant version of Islandora 7.x.](https://github.com/Islandora-Labs/islandora_vagrant)
+This ansible playbook installs and configures [a full testing and development stack of islandora-7.x](https://github.com/Islandora-Labs/islandora_vagrant)
 
 This ansible playbook has been tested using Ubuntu 14.04
 
@@ -9,12 +9,12 @@ This ansible playbook has been tested using Ubuntu 14.04
 Clone this repository locally, edit `hosts` in install-islandora-7.x.yaml to where you want to install.
 
 ```bash
-git clone https://github.com/jefferyb/islandora-7.x-ansible-installer.git
-cd islandora-7.x-ansible-installer
+git clone https://github.com/jefferyb/islandora-7.x-development-ansible.git
+cd islandora-7.x-development-ansible
 ansible-playbook install-islandora-7.x.yaml
 ```
 
-If you want to switch some settings, edit `islandora-7.x-ansible-installer/roles/install-islandora-7.x/vars/main.yml`
+If you want to switch some settings, edit `islandora-7.x-development-ansible/roles/install-islandora-7.x/vars/main.yml`
 
 # Contributing
 
