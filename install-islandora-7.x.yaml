@@ -1,5 +1,6 @@
 ---
 - hosts: localhost
-  become: true
+  # user: root
+  # become: true
   roles:
     - install-islandora-7.x
